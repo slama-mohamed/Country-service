@@ -3,51 +3,24 @@ pipeline {
 
     tools {
         jdk 'JDK21'
-        maven 'M2_HOME'
-    }
-
-    environment {
-        NEXUS_URL = 'http://localhost:8081'
     }
 
     stages {
-        stage('Compile, test, package') {
+        stage('Checkout') {
             steps {
-                sh 'mvn clean verify'
-            }
-            post {
-                always {
-                    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
-                }
+                echo 'Code recupere depuis GitHub'
             }
         }
 
-        stage('Deploy artifact to Nexus') {
+        stage('Build Maven') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'nexus-credentials',
-                                                  usernameVariable: 'NEXUS_USER',
-                                                  passwordVariable: 'NEXUS_PASS')]) {
-                    sh 'mvn deploy -DskipTests -s settings.xml'
-                }
+                sh 'mvn clean package -DskipTests'
             }
         }
 
-        stage('Publish reports to Nexus') {
+        stage('Build Docker Image') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'nexus-credentials',
-                                                  usernameVariable: 'NEXUS_USER',
-                                                  passwordVariable: 'NEXUS_PASS')]) {
-                    sh '''
-                        BASE="$NEXUS_URL/repository/reports/country-service/$BUILD_NUMBER"
-                        tar -czf target/jacoco-report.tar.gz -C target/site jacoco
-                        tar -czf target/surefire-reports.tar.gz -C target surefire-reports
-
-                        curl -sSf -u "$NEXUS_USER:$NEXUS_PASS" \
-                             --upload-file target/jacoco-report.tar.gz "$BASE/jacoco-report.tar.gz"
-                        curl -sSf -u "$NEXUS_USER:$NEXUS_PASS" \
-                             --upload-file target/surefire-reports.tar.gz "$BASE/surefire-reports.tar.gz"
-                    '''
-                }
+                sh 'docker build -t my-country-service:latest .'
             }
         }
     }

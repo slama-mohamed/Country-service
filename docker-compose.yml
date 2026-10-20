@@ -1,0 +1,16 @@
+services:
+  my-country-service1:
+    build: .
+    container_name: my-country-service1
+    ports:
+      - "8080:8080"
+    expose:
+      - "8080"
+
+  my-country-service2:
+    build: .
+    container_name: my-country-service2
+    ports:
+      - "8081:8080"
+    expose:
+      - "8080"
