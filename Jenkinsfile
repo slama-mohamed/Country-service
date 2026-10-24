@@ -14,7 +14,6 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout code') {
             steps {
                 git branch: 'main',
@@ -24,7 +23,7 @@ pipeline {
 
         stage('Compile, test and package') {
             steps {
-                sh 'mvn clean install'
+                sh 'mvn clean verify'
             }
         }
 
@@ -56,18 +55,18 @@ pipeline {
 
                         cat > nexus-settings.xml <<EOF
 <settings>
-  <servers>
-    <server>
-      <id>nexus-releases</id>
-      <username>${NEXUS_USER}</username>
-      <password>${NEXUS_PASS}</password>
-    </server>
-    <server>
-      <id>nexus-snapshots</id>
-      <username>${NEXUS_USER}</username>
-      <password>${NEXUS_PASS}</password>
-    </server>
-  </servers>
+    <servers>
+        <server>
+            <id>nexus-releases</id>
+            <username>${NEXUS_USER}</username>
+            <password>${NEXUS_PASS}</password>
+        </server>
+        <server>
+            <id>nexus-snapshots</id>
+            <username>${NEXUS_USER}</username>
+            <password>${NEXUS_PASS}</password>
+        </server>
+    </servers>
 </settings>
 EOF
 
@@ -89,13 +88,11 @@ EOF
                     sh '''
                         set +x
 
-                        if [ -d target/site/jacoco ]; then
+                        if [ -f target/site/jacoco/jacoco.xml ]; then
                             curl --fail --silent --show-error \
                                 -u "$NEXUS_USER:$NEXUS_PASS" \
                                 --upload-file target/site/jacoco/jacoco.xml \
                                 "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/jacoco.xml"
-                        else
-                            echo "JaCoCo report directory not found."
                         fi
 
                         if [ -d target/surefire-reports ]; then
@@ -107,8 +104,6 @@ EOF
                                     --upload-file "$file" \
                                     "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/$(basename "$file")"
                             done
-                        else
-                            echo "Surefire report directory not found."
                         fi
                     '''
                 }
@@ -128,15 +123,16 @@ EOF
         stage('Push to DockerHub') {
             steps {
                 withCredentials([
-                    string(
+                    usernamePassword(
                         credentialsId: 'dockerhub-pwd',
-                        variable: 'DOCKERHUB_PASS'
+                        usernameVariable: 'DOCKERHUB_CRED_USER',
+                        passwordVariable: 'DOCKERHUB_PASS'
                     )
                 ]) {
                     sh '''
                         set +x
                         echo "$DOCKERHUB_PASS" | docker login \
-                            -u "$DOCKERHUB_USER" --password-stdin
+                            -u "$DOCKERHUB_CRED_USER" --password-stdin
 
                         docker push ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER}
                         docker push ${DOCKERHUB_USER}/country-service:latest
