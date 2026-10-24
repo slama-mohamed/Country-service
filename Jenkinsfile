@@ -9,11 +9,12 @@ pipeline {
 
     environment {
         DOCKERHUB_USER = 'mohamedslamaa'
-        IMAGE_NAME     = 'country-service'
-        FULL_IMAGE     = "${DOCKERHUB_USER}/${IMAGE_NAME}"
+        SONAR_PROJECT_KEY = 'country-service'
+        NEXUS_URL = 'http://localhost:8081'
     }
 
     stages {
+
         stage('Checkout code') {
             steps {
                 git branch: 'main',
@@ -21,35 +22,24 @@ pipeline {
             }
         }
 
-        stage('Compile, test code, package') {
+        stage('Compile, test and package') {
             steps {
                 sh 'mvn clean install'
             }
-            post {
-                always {
-                    junit allowEmptyResults: true,
-                        testResults: '**/target/surefire-reports/*.xml'
+        }
 
-                    archiveArtifacts artifacts: 'target/site/jacoco/**',
-                        allowEmptyArchive: true
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('MySonarQubeServer') {
+                    sh '''
+                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.projectName=country-service \
+                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                    '''
                 }
             }
         }
-
-        
-		stage('SonarQube Analysis') {
-		    steps {
-		        withSonarQubeEnv('MySonarQubeServer') {
-		            sh '''
-		                mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
-		                    -Dsonar.projectKey=country-service \
-		                    -Dsonar.projectName=country-service \
-		                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
-		            '''
-		        }
-		    }
-		}
-
 
         stage('Deploy jar to Nexus') {
             steps {
@@ -60,7 +50,29 @@ pipeline {
                         passwordVariable: 'NEXUS_PASS'
                     )
                 ]) {
-                    sh 'mvn deploy -DskipTests'
+                    sh '''
+                        set +x
+                        trap 'rm -f nexus-settings.xml' EXIT
+
+                        cat > nexus-settings.xml <<EOF
+<settings>
+  <servers>
+    <server>
+      <id>nexus-releases</id>
+      <username>${NEXUS_USER}</username>
+      <password>${NEXUS_PASS}</password>
+    </server>
+    <server>
+      <id>nexus-snapshots</id>
+      <username>${NEXUS_USER}</username>
+      <password>${NEXUS_PASS}</password>
+    </server>
+  </servers>
+</settings>
+EOF
+
+                        mvn -s nexus-settings.xml deploy -DskipTests
+                    '''
                 }
             }
         }
@@ -69,45 +81,46 @@ pipeline {
             steps {
                 withCredentials([
                     usernamePassword(
-                        credentialsId: 'nexus-creds',
+                        credentialsId: 'nexus-credentials',
                         usernameVariable: 'NEXUS_USER',
                         passwordVariable: 'NEXUS_PASS'
                     )
                 ]) {
                     sh '''
-                        set -eu
+                        set +x
 
-                        test -d target/site/jacoco
-                        test -d target/surefire-reports
+                        if [ -d target/site/jacoco ]; then
+                            curl --fail --silent --show-error \
+                                -u "$NEXUS_USER:$NEXUS_PASS" \
+                                --upload-file target/site/jacoco/jacoco.xml \
+                                "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/jacoco.xml"
+                        else
+                            echo "JaCoCo report directory not found."
+                        fi
 
-                        cd target
+                        if [ -d target/surefire-reports ]; then
+                            for file in target/surefire-reports/*.xml; do
+                                [ -f "$file" ] || continue
 
-                        tar -czf jacoco-report.tar.gz -C site jacoco
-                        tar -czf surefire-reports.tar.gz surefire-reports
-
-                        BASE="http://localhost:8081/repository/reports/country-service/${BUILD_NUMBER}"
-
-                        curl --fail --show-error \
-                            -u "$NEXUS_USER:$NEXUS_PASS" \
-                            --upload-file jacoco-report.tar.gz \
-                            "$BASE/jacoco-report.tar.gz"
-
-                        curl --fail --show-error \
-                            -u "$NEXUS_USER:$NEXUS_PASS" \
-                            --upload-file surefire-reports.tar.gz \
-                            "$BASE/surefire-reports.tar.gz"
+                                curl --fail --silent --show-error \
+                                    -u "$NEXUS_USER:$NEXUS_PASS" \
+                                    --upload-file "$file" \
+                                    "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/$(basename "$file")"
+                            done
+                        else
+                            echo "Surefire report directory not found."
+                        fi
                     '''
                 }
             }
         }
 
-        // Étapes Docker
         stage('Build Docker image') {
             steps {
                 sh '''
-                    docker build \
-                        -t ${FULL_IMAGE}:${BUILD_NUMBER} \
-                        -t ${FULL_IMAGE}:latest .
+                    docker build -t ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER} .
+                    docker tag ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER} \
+                        ${DOCKERHUB_USER}/country-service:latest
                 '''
             }
         }
@@ -117,18 +130,16 @@ pipeline {
                 withCredentials([
                     string(
                         credentialsId: 'dockerhub-pwd',
-                        variable: 'DOCKERHUB_PWD'
+                        variable: 'DOCKERHUB_PASS'
                     )
                 ]) {
                     sh '''
-                        set -eu
+                        set +x
+                        echo "$DOCKERHUB_PASS" | docker login \
+                            -u "$DOCKERHUB_USER" --password-stdin
 
-                        echo "$DOCKERHUB_PWD" | docker login \
-                            -u "$DOCKERHUB_USER" \
-                            --password-stdin
-
-                        docker push "${FULL_IMAGE}:${BUILD_NUMBER}"
-                        docker push "${FULL_IMAGE}:latest"
+                        docker push ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER}
+                        docker push ${DOCKERHUB_USER}/country-service:latest
 
                         docker logout
                     '''
@@ -139,18 +150,12 @@ pipeline {
         stage('Deploy micro-service') {
             steps {
                 sh '''
-                    set -eu
-
-                    docker rm -f country-app || true
+                    docker rm -f country-service-app || true
 
                     docker run -d \
-                        --name country-app \
+                        --name country-service-app \
                         -p 8082:8081 \
-                        "${FULL_IMAGE}:${BUILD_NUMBER}"
-
-                    sleep 15
-
-                    docker ps --filter name=country-app
+                        ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER}
                 '''
             }
         }
@@ -158,13 +163,15 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline terminé avec succès."
-            echo "Application : http://localhost:8082"
-            echo "Image Docker : ${FULL_IMAGE}:${BUILD_NUMBER}"
+            echo 'Pipeline completed successfully!'
         }
 
         failure {
-            echo 'Pipeline en échec : consulte la Console Output.'
+            echo 'Pipeline failed. Check the stage logs above.'
+        }
+
+        always {
+            echo 'CI/CD pipeline execution finished.'
         }
     }
 }
