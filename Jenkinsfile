@@ -36,18 +36,20 @@ pipeline {
             }
         }
 
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('MySonarQubeServer') {
-                    sh '''
-                        mvn sonar:sonar \
-                            -Dsonar.projectKey=country-service \
-                            -Dsonar.projectName=country-service \
-                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
-                    '''
-                }
-            }
-        }
+        
+		stage('SonarQube Analysis') {
+		    steps {
+		        withSonarQubeEnv('MySonarQubeServer') {
+		            sh '''
+		                mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
+		                    -Dsonar.projectKey=country-service \
+		                    -Dsonar.projectName=country-service \
+		                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+		            '''
+		        }
+		    }
+		}
+
 
         stage('Deploy jar to Nexus') {
             steps {
