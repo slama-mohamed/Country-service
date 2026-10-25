@@ -8,10 +8,13 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB_USER = 'mohamedslamaa'
-        SONAR_PROJECT_KEY = 'country-service'
-        NEXUS_URL = 'http://localhost:8081'
-    }
+	    DOCKERHUB_USER    = 'mohamedslamaa'
+	    IMAGE_NAME        = 'country-service'
+	    SONAR_PROJECT_KEY = 'country-service'
+	    NEXUS_URL         = 'http://localhost:8081'
+	    APP_PORT          = '8081'
+	    HOST_PORT         = '8084'
+	}
 
     stages {
         stage('Checkout code') {

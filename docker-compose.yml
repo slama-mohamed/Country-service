@@ -3,14 +3,12 @@ services:
     build: .
     container_name: my-country-service1
     ports:
-      - "8080:8080"
-    expose:
-      - "8080"
+      - "8082:8081"
+    restart: unless-stopped
 
   my-country-service2:
     build: .
     container_name: my-country-service2
     ports:
-      - "8081:8080"
-    expose:
-      - "8080"
+      - "8083:8081"
+    restart: unless-stopped
