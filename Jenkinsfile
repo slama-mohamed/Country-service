@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -8,13 +7,13 @@ pipeline {
     }
 
     environment {
-	    DOCKERHUB_USER    = 'mohamedslamaa'
-	    IMAGE_NAME        = 'country-service'
-	    SONAR_PROJECT_KEY = 'country-service'
-	    NEXUS_URL         = 'http://localhost:8081'
-	    APP_PORT          = '8081'
-	    HOST_PORT         = '8084'
-	}
+        DOCKERHUB_USER    = 'mohamedslamaa'
+        IMAGE_NAME        = 'country-service'
+        SONAR_PROJECT_KEY = 'country-service'
+        NEXUS_URL         = 'http://localhost:8081'
+        APP_PORT          = '8081'   // port d'écoute de l'application (server.port)
+        HOST_PORT         = '8084'   // port exposé sur la machine
+    }
 
     stages {
         stage('Checkout code') {
@@ -116,9 +115,9 @@ EOF
         stage('Build Docker image') {
             steps {
                 sh '''
-                    docker build -t ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER} .
-                    docker tag ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER} \
-                        ${DOCKERHUB_USER}/country-service:latest
+                    docker build -t ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER} .
+                    docker tag ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER} \
+                        ${DOCKERHUB_USER}/${IMAGE_NAME}:latest
                 '''
             }
         }
@@ -137,8 +136,8 @@ EOF
                         echo "$DOCKERHUB_PASS" | docker login \
                             -u "$DOCKERHUB_CRED_USER" --password-stdin
 
-                        docker push ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER}
-                        docker push ${DOCKERHUB_USER}/country-service:latest
+                        docker push ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}
+                        docker push ${DOCKERHUB_USER}/${IMAGE_NAME}:latest
 
                         docker logout
                     '''
@@ -153,8 +152,28 @@ EOF
 
                     docker run -d \
                         --name country-service-app \
-                        -p 8082:8081 \
-                        ${DOCKERHUB_USER}/country-service:${BUILD_NUMBER}
+                        --restart unless-stopped \
+                        -p ${HOST_PORT}:${APP_PORT} \
+                        ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}
+                '''
+            }
+        }
+
+        stage('Verify deployment') {
+            steps {
+                sh '''
+                    echo "Attente du démarrage de l'application..."
+                    for i in $(seq 1 30); do
+                        CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${HOST_PORT}/ || true)
+                        if [ "$CODE" = "200" ]; then
+                            echo "Le service répond (HTTP 200) sur le port ${HOST_PORT}"
+                            exit 0
+                        fi
+                        sleep 2
+                    done
+                    echo "Le service ne répond pas"
+                    docker logs country-service-app
+                    exit 1
                 '''
             }
         }
@@ -164,12 +183,11 @@ EOF
         success {
             echo 'Pipeline completed successfully!'
         }
-
         failure {
             echo 'Pipeline failed. Check the stage logs above.'
         }
-
         always {
+            sh 'docker logout || true'
             echo 'CI/CD pipeline execution finished.'
         }
     }
