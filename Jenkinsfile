@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -11,8 +12,8 @@ pipeline {
         IMAGE_NAME        = 'country-service'
         SONAR_PROJECT_KEY = 'country-service'
         NEXUS_URL         = 'http://localhost:8081'
-        APP_PORT          = '8081'   // port d'écoute de l'application (server.port)
-        HOST_PORT         = '8084'   // port exposé sur la machine
+        APP_PORT          = '8081'
+        HOST_PORT         = '8084'
     }
 
     stages {
@@ -145,7 +146,7 @@ EOF
             }
         }
 
-        stage('Deploy micro-service') {
+        stage('Deploy micro-service with Docker') {
             steps {
                 sh '''
                     docker rm -f country-service-app || true
@@ -159,22 +160,37 @@ EOF
             }
         }
 
-        stage('Verify deployment') {
+        stage('Verify Docker deployment') {
             steps {
                 sh '''
                     echo "Attente du démarrage de l'application..."
+
                     for i in $(seq 1 30); do
-                        CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${HOST_PORT}/ || true)
+                        CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                            http://localhost:${HOST_PORT}/ || true)
+
                         if [ "$CODE" = "200" ]; then
                             echo "Le service répond (HTTP 200) sur le port ${HOST_PORT}"
                             exit 0
                         fi
+
                         sleep 2
                     done
+
                     echo "Le service ne répond pas"
                     docker logs country-service-app
                     exit 1
                 '''
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withKubeConfig([credentialsId: 'kubeconfig-file']) {
+                    sh 'kubectl apply -f deployment.yaml'
+                    sh 'kubectl apply -f service.yaml'
+                    sh 'kubectl rollout status deployment/my-country-service-deployment --timeout=120s'
+                }
             }
         }
     }
@@ -183,9 +199,11 @@ EOF
         success {
             echo 'Pipeline completed successfully!'
         }
+
         failure {
             echo 'Pipeline failed. Check the stage logs above.'
         }
+
         always {
             sh 'docker logout || true'
             echo 'CI/CD pipeline execution finished.'
