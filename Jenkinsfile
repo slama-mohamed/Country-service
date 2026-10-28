@@ -2,6 +2,11 @@
 pipeline {
     agent any
 
+    options {
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
     tools {
         jdk 'JDK21'
         maven 'M2_HOME'
@@ -14,6 +19,8 @@ pipeline {
         NEXUS_URL = 'http://localhost:8081'
         APP_PORT = '8081'
         HOST_PORT = '8084'
+        K8S_DEPLOYMENT = 'my-country-service-deployment'
+        K8S_SERVICE = 'my-country-service'
     }
 
     stages {
@@ -91,9 +98,11 @@ EOF
                 ]) {
                     sh '''
                         set +x
+                        set -e
 
                         if [ -f target/site/jacoco/jacoco.xml ]; then
                             curl --fail --silent --show-error \
+                              --retry 2 --retry-delay 3 \
                               -u "$NEXUS_USER:$NEXUS_PASS" \
                               --upload-file target/site/jacoco/jacoco.xml \
                               "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/jacoco.xml"
@@ -104,6 +113,7 @@ EOF
                                 [ -f "$file" ] || continue
 
                                 curl --fail --silent --show-error \
+                                  --retry 2 --retry-delay 3 \
                                   -u "$NEXUS_USER:$NEXUS_PASS" \
                                   --upload-file "$file" \
                                   "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/$(basename "$file")"
@@ -125,6 +135,8 @@ EOF
                     docker tag \
                       ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER} \
                       ${DOCKERHUB_USER}/${IMAGE_NAME}:latest
+
+                    docker images ${DOCKERHUB_USER}/${IMAGE_NAME}
                 '''
             }
         }
@@ -151,7 +163,7 @@ EOF
                             ATTEMPT=1
 
                             while [ "$ATTEMPT" -le 3 ]; do
-                                echo "Push de $IMAGE - tentative $ATTEMPT/3"
+                                echo "Push de $IMAGE : tentative $ATTEMPT/3"
 
                                 if docker push "$IMAGE"; then
                                     echo "Push réussi : $IMAGE"
@@ -163,16 +175,16 @@ EOF
                                     return 1
                                 fi
 
+                                WAIT=$((ATTEMPT * 15))
+                                echo "Nouvelle tentative dans $WAIT secondes..."
+                                sleep "$WAIT"
+
                                 ATTEMPT=$((ATTEMPT + 1))
-                                echo "Nouvelle tentative dans 10 secondes..."
-                                sleep 10
                             done
                         }
 
                         retry_push "${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
                         retry_push "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
-
-                        docker logout
                     '''
                 }
             }
@@ -190,6 +202,8 @@ EOF
                       --restart unless-stopped \
                       -p ${HOST_PORT}:${APP_PORT} \
                       ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    docker ps --filter name=country-service-app
                 '''
             }
         }
@@ -205,14 +219,14 @@ EOF
                           http://localhost:${HOST_PORT}/ || true)
 
                         if [ "$CODE" = "200" ]; then
-                            echo "Le service répond avec HTTP 200 sur le port ${HOST_PORT}"
+                            echo "Application disponible sur le port ${HOST_PORT}"
                             exit 0
                         fi
 
                         sleep 2
                     done
 
-                    echo "Le service ne répond pas après 60 secondes."
+                    echo "L'application ne répond pas après 60 secondes."
                     docker logs country-service-app || true
                     exit 1
                 '''
@@ -225,16 +239,22 @@ EOF
                     sh '''
                         set -e
 
+                        echo "Application des fichiers Kubernetes..."
+
                         sed "s|image: .*|image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}|" \
                           deployment.yaml | kubectl apply -f -
 
                         kubectl apply -f service.yaml
 
-                        kubectl rollout status deployment/my-country-service \
+                        echo "Vérification du déploiement..."
+
+                        kubectl rollout status \
+                          deployment/${K8S_DEPLOYMENT} \
                           --timeout=120s
 
                         kubectl get pods
-                        kubectl get svc my-country-service
+                        kubectl get deployments
+                        kubectl get services
                     '''
                 }
             }
@@ -243,16 +263,16 @@ EOF
 
     post {
         success {
-            echo 'Pipeline completed successfully!'
+            echo 'Pipeline CI/CD terminé avec succès !'
         }
 
         failure {
-            echo 'Pipeline failed. Check the stage logs above.'
+            echo 'Pipeline en échec. Consultez la Console Output pour identifier la première étape en erreur.'
         }
 
         always {
             sh 'docker logout || true'
-            echo 'CI/CD pipeline execution finished.'
+            echo 'Exécution du pipeline CI/CD terminée.'
         }
     }
 }
