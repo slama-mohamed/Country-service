@@ -18,7 +18,7 @@ pipeline {
         NEXUS_URL = 'http://localhost:8081'
         APP_PORT = '8081'
         HOST_PORT = '8084'
-        K8S_DEPLOYMENT = 'my-country-service-deployment'
+        K8S_DEPLOYMENT = 'my-country-service'
         K8S_SERVICE = 'my-country-service'
     }
 
