@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -12,17 +11,8 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB_USER = 'mohamedslamaa'
-        IMAGE_NAME = 'country-service'
-
         SONAR_PROJECT_KEY = 'country-service'
         NEXUS_URL = 'http://localhost:8081'
-
-        APP_PORT = '8081'
-        HOST_PORT = '8084'
-
-        K8S_DEPLOYMENT = 'my-country-service'
-        K8S_SERVICE = 'my-country-service'
     }
 
     stages {
@@ -139,129 +129,37 @@ EOF
             }
         }
 
-        // 6. Build Docker image
-        stage('Build Docker image') {
-            steps {
-                sh '''
-                    set -e
-
-                    docker build \
-                        -t ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER} \
-                        -t ${DOCKERHUB_USER}/${IMAGE_NAME}:latest .
-
-                    docker images ${DOCKERHUB_USER}/${IMAGE_NAME}
-                '''
-            }
-        }
-
-        // 7. Push Docker image
-        stage('Push to Docker Hub') {
+        // 6. Build, push et déploiement avec Ansible (Docker Hub + Kubernetes)
+        stage('Deploy using Ansible playbook') {
             steps {
                 withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-pwd',
-                        usernameVariable: 'DOCKERHUB_CRED_USER',
-                        passwordVariable: 'DOCKERHUB_PASS'
-                    )
+                    string(credentialsId: 'vault-pass', variable: 'VP'),
+                    file(credentialsId: 'kubeconfig-file', variable: 'KUBE_FILE')
                 ]) {
                     sh '''
                         set +x
                         set -e
 
-                        echo "$DOCKERHUB_PASS" | docker login \
-                            --username "$DOCKERHUB_CRED_USER" \
-                            --password-stdin
+                        trap 'rm -f .vp config' EXIT
 
-                        docker push "${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
-                        docker push "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
-                    '''
-                }
-            }
-        }
+                        cp "$KUBE_FILE" config
+                        echo "$VP" > .vp
 
-        // 8. Deploy with Docker
-        stage('Deploy micro-service with Docker') {
-            steps {
-                sh '''
-                    set -e
-
-                    docker rm -f country-service-app || true
-
-                    docker run -d \
-                        --name country-service-app \
-                        --restart unless-stopped \
-                        -p ${HOST_PORT}:${APP_PORT} \
-                        ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}
-
-                    docker ps --filter name=country-service-app
-                '''
-            }
-        }
-
-        // 9. Verify Docker deployment
-        stage('Verify Docker deployment') {
-            steps {
-                sh '''
-                    set -e
-
-                    echo "Waiting for Spring Boot health endpoint..."
-
-                    for i in $(seq 1 30); do
-                        CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                            "http://localhost:${HOST_PORT}/actuator/health" || true)
-
-                        if [ "$CODE" = "200" ]; then
-                            echo "Application is healthy."
-                            exit 0
-                        fi
-
-                        sleep 2
-                    done
-
-                    echo "Application did not become healthy."
-                    docker logs country-service-app || true
-                    exit 1
-                '''
-            }
-        }
-
-        // 10. Deploy to Kubernetes
-        stage('Deploy to Kubernetes') {
-            steps {
-                withKubeConfig([credentialsId: 'kubeconfig-file']) {
-                    sh '''
-                        set -e
-
-                        echo "Deploying application to Kubernetes..."
-
-                        sed "s|image: .*|image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}|" \
-                            deployment.yaml | kubectl apply -f -
-
-                        kubectl apply -f service.yaml
-
-                        kubectl rollout status \
-                            deployment/${K8S_DEPLOYMENT} \
-                            --timeout=120s
-
-                        echo "Kubernetes deployment completed."
-
-                        kubectl get pods
-                        kubectl get deployments
-                        kubectl get services
+                        ansible-playbook -i hosts playbookCICD.yml \
+                            --vault-password-file .vp
                     '''
                 }
             }
         }
     }
 
-    // Post actions
     post {
         success {
-            echo 'Pipeline CI/CD completed successfully!'
+            echo 'Ansible playbook executed successfully!'
         }
 
         failure {
-            echo 'Pipeline failed. Check Console Output.'
+            echo 'Ansible playbook execution failed! Check Console Output.'
         }
 
         always {

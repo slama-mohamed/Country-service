@@ -17,4 +17,6 @@ spec:
           image: mohamedslamaa/country-service:v1
           imagePullPolicy: Always
           ports:
-            - containerPort: 8081
+            - name: http
+              containerPort: 8081
+              protocol: TCP
