@@ -1,9 +1,9 @@
-
 pipeline {
     agent any
 
     options {
         timeout(time: 60, unit: 'MINUTES')
+        timestamps()
     }
 
     tools {
@@ -23,7 +23,6 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout code') {
             steps {
                 git branch: 'main',
@@ -33,7 +32,8 @@ pipeline {
 
         stage('Compile, test and package') {
             steps {
-                sh 'mvn clean verify'
+                sh 'mvn -B clean verify'
+                sh 'test -f target/country-service-0.0.1-SNAPSHOT.jar'
             }
         }
 
@@ -41,16 +41,13 @@ pipeline {
             steps {
                 withSonarQubeEnv('MySonarQubeServer') {
                     sh '''
-                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
-                          -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                          -Dsonar.projectName=country-service \
-                          -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                        mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar                           -Dsonar.projectKey="${SONAR_PROJECT_KEY}"                           -Dsonar.projectName=country-service                           -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
                     '''
                 }
             }
         }
 
-        stage('Deploy jar to Nexus') {
+        stage('Deploy JAR to Nexus') {
             steps {
                 withCredentials([
                     usernamePassword(
@@ -62,25 +59,23 @@ pipeline {
                     sh '''
                         set +x
                         trap 'rm -f nexus-settings.xml' EXIT
-
                         cat > nexus-settings.xml <<EOF
 <settings>
-    <servers>
-        <server>
-            <id>nexus-releases</id>
-            <username>${NEXUS_USER}</username>
-            <password>${NEXUS_PASS}</password>
-        </server>
-        <server>
-            <id>nexus-snapshots</id>
-            <username>${NEXUS_USER}</username>
-            <password>${NEXUS_PASS}</password>
-        </server>
-    </servers>
+  <servers>
+    <server>
+      <id>nexus-releases</id>
+      <username>${NEXUS_USER}</username>
+      <password>${NEXUS_PASS}</password>
+    </server>
+    <server>
+      <id>nexus-snapshots</id>
+      <username>${NEXUS_USER}</username>
+      <password>${NEXUS_PASS}</password>
+    </server>
+  </servers>
 </settings>
 EOF
-
-                        mvn -s nexus-settings.xml deploy -DskipTests
+                        mvn -B -s nexus-settings.xml deploy -DskipTests
                     '''
                 }
             }
@@ -98,24 +93,16 @@ EOF
                     sh '''
                         set +x
                         set -e
+                        REPORT_URL="${NEXUS_URL}/repository/reports/country-service/${BUILD_NUMBER}"
 
                         if [ -f target/site/jacoco/jacoco.xml ]; then
-                            curl --fail --silent --show-error \
-                              --retry 2 --retry-delay 3 \
-                              -u "$NEXUS_USER:$NEXUS_PASS" \
-                              --upload-file target/site/jacoco/jacoco.xml \
-                              "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/jacoco.xml"
+                            curl --fail --silent --show-error --retry 2 --retry-delay 3                               -u "${NEXUS_USER}:${NEXUS_PASS}"                               --upload-file target/site/jacoco/jacoco.xml                               "${REPORT_URL}/jacoco.xml"
                         fi
 
                         if [ -d target/surefire-reports ]; then
                             for file in target/surefire-reports/*.xml; do
                                 [ -f "$file" ] || continue
-
-                                curl --fail --silent --show-error \
-                                  --retry 2 --retry-delay 3 \
-                                  -u "$NEXUS_USER:$NEXUS_PASS" \
-                                  --upload-file "$file" \
-                                  "$NEXUS_URL/repository/reports/country-service/${BUILD_NUMBER}/$(basename "$file")"
+                                curl --fail --silent --show-error --retry 2 --retry-delay 3                                   -u "${NEXUS_USER}:${NEXUS_PASS}"                                   --upload-file "$file"                                   "${REPORT_URL}/$(basename "$file")"
                             done
                         fi
                     '''
@@ -127,20 +114,13 @@ EOF
             steps {
                 sh '''
                     set -e
-
-                    docker build \
-                      -t ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER} .
-
-                    docker tag \
-                      ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER} \
-                      ${DOCKERHUB_USER}/${IMAGE_NAME}:latest
-
+                    docker build                       -t ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}                       -t ${DOCKERHUB_USER}/${IMAGE_NAME}:latest .
                     docker images ${DOCKERHUB_USER}/${IMAGE_NAME}
                 '''
             }
         }
 
-        stage('Push to DockerHub') {
+        stage('Push to Docker Hub') {
             steps {
                 withCredentials([
                     usernamePassword(
@@ -152,80 +132,39 @@ EOF
                     sh '''
                         set +x
                         set -e
-
-                        echo "$DOCKERHUB_PASS" | docker login \
-                          -u "$DOCKERHUB_CRED_USER" \
-                          --password-stdin
-
-                        retry_push() {
-                            IMAGE="$1"
-                            ATTEMPT=1
-
-                            while [ "$ATTEMPT" -le 3 ]; do
-                                echo "Push de $IMAGE : tentative $ATTEMPT/3"
-
-                                if docker push "$IMAGE"; then
-                                    echo "Push réussi : $IMAGE"
-                                    return 0
-                                fi
-
-                                if [ "$ATTEMPT" -eq 3 ]; then
-                                    echo "Échec du push après 3 tentatives."
-                                    return 1
-                                fi
-
-                                WAIT=$((ATTEMPT * 15))
-                                echo "Nouvelle tentative dans $WAIT secondes..."
-                                sleep "$WAIT"
-
-                                ATTEMPT=$((ATTEMPT + 1))
-                            done
-                        }
-
-                        retry_push "${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
-                        retry_push "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
+                        echo "$DOCKERHUB_PASS" | docker login                           --username "$DOCKERHUB_CRED_USER"                           --password-stdin
+                        docker push "${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
+                        docker push "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
                     '''
                 }
             }
         }
 
-        stage('Deploy micro-service') {
+        stage('Deploy micro-service with Docker') {
             steps {
                 sh '''
                     set -e
-
                     docker rm -f country-service-app || true
-
-                    docker run -d \
-                      --name country-service-app \
-                      --restart unless-stopped \
-                      -p ${HOST_PORT}:${APP_PORT} \
-                      ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}
-
+                    docker run -d                       --name country-service-app                       --restart unless-stopped                       -p ${HOST_PORT}:${APP_PORT}                       ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker ps --filter name=country-service-app
                 '''
             }
         }
 
-        stage('Verify deployment') {
+        stage('Verify Docker deployment') {
             steps {
                 sh '''
-                    echo "Attente du démarrage de l'application..."
-
+                    set -e
+                    echo "Waiting for Spring Boot health endpoint..."
                     for i in $(seq 1 30); do
-                        CODE=$(curl -s -o /dev/null \
-                          -w "%{http_code}" \
-                          http://localhost:${HOST_PORT}/ || true)
-
+                        CODE=$(curl -s -o /dev/null -w "%{http_code}"                           "http://localhost:${HOST_PORT}/actuator/health" || true)
                         if [ "$CODE" = "200" ]; then
-                            echo "Application disponible sur le port ${HOST_PORT}"
+                            echo "Application is healthy."
                             exit 0
                         fi
-
                         sleep 2
                     done
-
-                    echo "L'application ne répond pas après 60 secondes."
+                    echo "Application did not become healthy."
                     docker logs country-service-app || true
                     exit 1
                 '''
@@ -237,20 +176,9 @@ EOF
                 withKubeConfig([credentialsId: 'kubeconfig-file']) {
                     sh '''
                         set -e
-
-                        echo "Application des fichiers Kubernetes..."
-
-                        sed "s|image: .*|image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}|" \
-                          deployment.yaml | kubectl apply -f -
-
+                        sed "s|image: .*|image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}|"                           deployment.yaml | kubectl apply -f -
                         kubectl apply -f service.yaml
-
-                        echo "Vérification du déploiement..."
-
-                        kubectl rollout status \
-                          deployment/${K8S_DEPLOYMENT} \
-                          --timeout=120s
-
+                        kubectl rollout status                           deployment/${K8S_DEPLOYMENT}                           --timeout=120s
                         kubectl get pods
                         kubectl get deployments
                         kubectl get services
@@ -262,16 +190,14 @@ EOF
 
     post {
         success {
-            echo 'Pipeline CI/CD terminé avec succès !'
+            echo 'Pipeline CI/CD completed successfully!'
         }
-
         failure {
-            echo 'Pipeline en échec. Consultez la Console Output pour identifier la première étape en erreur.'
+            echo 'Pipeline failed. Check the first error in Console Output.'
         }
-
         always {
             sh 'docker logout || true'
-            echo 'Exécution du pipeline CI/CD terminée.'
+            echo 'Pipeline execution finished.'
         }
     }
 }
