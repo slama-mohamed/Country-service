@@ -151,6 +151,35 @@ EOF
                 }
             }
         }
+        
+        
+        // 7. Monitoring : kube-state-metrics (Prometheus / Grafana)
+        stage('Deploy monitoring (kube-state-metrics)') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'kubeconfig-file', variable: 'KUBE_FILE')
+                ]) {
+                    sh '''
+                        set +x
+                        set -e
+                        export KUBECONFIG="$KUBE_FILE"
+
+                        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                        helm repo update
+
+                        helm upgrade --install kube-state-metrics \
+                            prometheus-community/kube-state-metrics \
+                            -n monitoring --create-namespace \
+                            --set service.type=NodePort \
+                            --set service.nodePort=30080 \
+                            --wait --timeout 3m
+
+                        kubectl get pods -n monitoring
+                        kubectl get pods -A | grep country-service || true
+                    '''
+                }
+            }
+        }
     }
 
     post {
